@@ -16,13 +16,16 @@ from torch import optim as optim
 from ready.models.unet import UNet
 from ready.utils.datasets import MobiousDataset
 from ready.utils.metrics import evaluate
-from ready.utils.utils import (HOME_PATH, sanity_check_trainloader,
-                               set_data_directory, evaluate_model)
+from ready.utils.utils import (HOME_PATH, create_data_loaders, evaluate_model,
+                               loss_values_file_writer,
+                               performance_file_writer,
+                               sanity_check_trainloader, set_data_directory,
+                               test_accuracy_file_writer, training_loop,
+                               validation_loop)
 
 torch.cuda.empty_cache()
 # import gc
 # gc.collect()
-
 
 def save_checkpoint(state, path):
     """
@@ -42,6 +45,7 @@ def calculate_epoch_loss(running_loss, num_samples):
     """
     Calculate epoch loss
     """
+
     return running_loss/num_samples
 
 def main(args):
@@ -156,26 +160,49 @@ def main(args):
     - FULL_DATA_PATH, transform=None, target_transform=None
     - FULL_DATA_PATH, transform=transforms_rotations, target_transform=transforms_rotations
     - FULL_DATA_PATH, transform=transforms_img, target_transform=transforms_rotations
-    
 
-    Use of SEED value as 42 is arbitrary. Any 32-bit integer is a valid seed. Using a seed when splitting the full_dataset means we can ensure the split is the same every time we run this file. 
+
+    Use of SEED value as 42 is arbitrary. Any 32-bit integer is a valid seed. Using a seed when splitting the full_dataset means we can ensure the split is the same every time we run this file.
     """
 
     config_file = args.config_file
     config = OmegaConf.load(config_file)
 
+    # Import all arguments from config
+
     DATA_PATH = config.dataset.data_path
     MODEL_PATH = config.dataset.models_path
     GITHUB_DATA_PATH = config.dataset.github_data_path
     debug_print_flag = config.model.debug_print_flag
+    use_github_data_path_flag = config.dataset.use_github_data_path_flag
+
+    TRANSFORM_OPERATION = config.transforms.transform_operation
+    TARGET_TRANSFORM_OPERATION = config.transforms.target_transform_operation
+
+    TRAIN_SET_RATIO = config.datasets_splitting_ratios.train_set
+    VALIDATION_SET_RATIO = config.datasets_splitting_ratios.validation_set
+    TEST_SET_RATIO = config.datasets_splitting_ratios.test_set
+
+    PRETRAINED_MODEL_FOLDER = config.pretrained_model.models_folder_path
+    CHECKPOINT_PATH = config.pretrained_model.checkpoint_path
+    MODEL_NAME_FOR_EVAL = config.pretrained_model.model_name_for_eval
+    evaluation_with_pretrained_model_flag = config.pretrained_model.evaluation_with_pretrained_model_flag
+
+    batch_size = config.model_hyperparameters.batch_size
+    num_workers = config.model_hyperparameters.num_workers
+    learning_rate = config.model_hyperparameters.learning_rate
+    run_epoch = config.model_hyperparameters.epochs
+
+    SEED = 42
 
     FULL_DATA_PATH = os.path.join(Path.home(), DATA_PATH)
     FULL_GITHUB_DATA_PATH = os.path.join(Path.cwd(), GITHUB_DATA_PATH)
     FULL_MODEL_PATH = os.path.join(Path.home(), MODEL_PATH)
+    FULL_PRETRAINED_MODEL_PATH = os.path.join(Path.home(), PRETRAINED_MODEL_FOLDER)
     if not os.path.exists(FULL_MODEL_PATH):
         os.makedirs(FULL_MODEL_PATH, exist_ok=True)
-    
-    use_github_data_path_flag = config.dataset.use_github_data_path_flag
+
+
     data_path = FULL_GITHUB_DATA_PATH if use_github_data_path_flag else FULL_DATA_PATH
 
     starttime = time.time()  # print(f'Starting training loop at {startt}')
@@ -225,48 +252,35 @@ def main(args):
     }
 
     # .get() returns None if operation is None or config arg not valid
-    transform_arg = transform_map.get(config.transforms.transform_operation, None)
-    target_transform_arg = transform_map.get(config.transforms.target_transform_operation, None)
-    
+    transform_arg = transform_map.get(TRANSFORM_OPERATION,None)
+    target_transform_arg = transform_map.get(TARGET_TRANSFORM_OPERATION, None)
+
     ## Length 5; github_data_path
     ## Length 1143;  data_path
     full_dataset = MobiousDataset(
         data_path, transform=transform_arg ,target_transform=target_transform_arg
         )
-    
-    SEED = 42
 
-    TRAIN_SET_RATIO = config.datasets_splitting_ratios.train_set
-    VALIDATION_SET_RATIO = config.datasets_splitting_ratios.validation_set
-    TEST_SET_RATIO = config.datasets_splitting_ratios.test_set
+    data_splitting_ratios = [TRAIN_SET_RATIO, VALIDATION_SET_RATIO, TEST_SET_RATIO]
 
-    train_set, validation_set, test_set = torch.utils.data.random_split(full_dataset, 
-                                                                        [TRAIN_SET_RATIO, VALIDATION_SET_RATIO, TEST_SET_RATIO],
-                                                                        torch.Generator().manual_seed(SEED)) 
+    train_loader, validation_loader, test_loader = create_data_loaders(full_dataset=full_dataset,
+                                                                       data_splitting_ratios=data_splitting_ratios,
+                                                                       seed=SEED,
+                                                                       batch_size=batch_size,
+                                                                       num_workers=num_workers)
 
-    logger.info(f"Length of trainset: {len(train_set)}")
-
-    batch_size = config.model_hyperparameters.batch_size
-    num_workers = config.model_hyperparameters.num_workers
-    learning_rate = config.model_hyperparameters.learning_rate
-    run_epoch = config.model_hyperparameters.epochs
-
-    trainloader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=batch_size, shuffle=True, num_workers=num_workers) 
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    
-    logger.info(f"trainloader.batch_size: {trainloader.batch_size}")
-        
+    # logger.info(f"trainloader.batch_size: {train_loader.batch_size}")
+    #
     if debug_print_flag:
-        sanity_check_trainloader(trainloader, cuda_available)
+        sanity_check_trainloader(train_loader, cuda_available)
 
-    model = UNet(nch_in=3, nch_out=4)
-    
     current_time_stamp= datetime.now().strftime("%d-%b-%Y_%H-%M-%S")
     PATH = FULL_MODEL_PATH+"/"+ current_time_stamp + "_" + device_name
 
-    if not config.pretrained_model.evaluation_with_pretrained_model_flag:
-        
+    model = UNet(nch_in=3, nch_out=4)
+
+    if not evaluation_with_pretrained_model_flag:
+
         num_params = len(nn.utils.parameters_to_vector(model.parameters()))
         logger.info(f"Number of parameters in model: {num_params}")
 
@@ -284,10 +298,10 @@ def main(args):
         if cuda_available:
             model.cuda()
             loss_fn.cuda()
-        
+
         epoch = None
 
-        performance_metrics_labels = ["accuracy", 
+        performance_metrics_labels = ["accuracy",
                                       "f1",
                                       "recall",
                                       "precision",
@@ -320,171 +334,107 @@ def main(args):
             "miou": 0.0,
             "dice": 0.0,
         }
-        
-        logger.info("Commencing training")
+
+        logger.info("Commencing Training and Validation Loop")
         logger.info(f"#########################")
 
         for i in range(epoch + 1 if epoch is not None else 1, run_epoch + 1):
-            logger.info(f"Train loop at epoch: {i}")
-            training_running_loss = 0.0
-            validation_running_loss = 0.0
-            num_samples, num_batches = 0, 0
+            logger.info(f"Training and Validation loop at Epoch: {i}")
+            total_training_running_loss, total_validation_running_loss = 0.0, 0.0
+            total_num_training_samples, total_num_validation_samples= 0, 0
+            # num_batches = 0
             # performance_epoch = {key: 0.0 for key in performance.keys()}
-            
+
             # Training
-            for j, data in enumerate(trainloader, 1):
-                  
-                images, labels = data
-                if cuda_available:
-                    images = images.cuda()
-                    labels = labels.cuda()
+            logger.info(f"Training Section")
+            for j, data in enumerate(train_loader, 1):
+                current_training_loss, num_samples_processed = training_loop(model=model,
+                              current_idx=j,
+                              current_data=data,
+                              optimizer=optimizer,
+                              training_performance_dict=training_performance,
+                              loss_fn = loss_fn,
+                              cuda_available=cuda_available)
 
-                optimizer.zero_grad()
-                output = model(images)
-                print(f"output.size() {output.size()};\
-                type(output): {type(output)};\
-                pred.type: {output.type()} ")
-                # torch.Size([batch_size_, 4, 400, 640]);
-                # <class 'torch.Tensor'>;
-                # torch.cuda.FloatTensor
+                total_training_running_loss += current_training_loss
+                total_num_training_samples += num_samples_processed
 
-                loss = loss_fn(output, labels)
-                loss.backward()
-                optimizer.step()
-
-                batch_metrics = evaluate(output, labels)
-
-                for key, value in batch_metrics.items():
-                    # print(f"{key}: {value:.4f}")
-                    training_performance[key] += value * len(images) # weighted by batch size
-
-                num_samples += len(images)
-                training_running_loss += loss.item()
-
-                # Log every X batches
-                if j % 50 == 0 or j == 1:
-                    print(f"Training: Loss at {j} mini-batch {loss.item():.4f}")
-                # TODO
-                #                sanity_check(trainloader, model, cuda_available)
-                #                save_checkpoint(
-                #                    {
-                #                        "epoch": run_epoch,
-                #                        "state_dict": model.state_dict(),
-                #                        "optimizer": optimizer.state_dict(),
-                #                    },
-                #                    "models/o.pth",
-                #                )
-                #
-                # if j == 300:
-                #     break
-                # # performance[key].append(average_metric)
-            
-            # Validation
             logger.info(f"#########################")
-            logger.info("Commencing validation")
+
+            # Validation
+            logger.info("Validation Section")
             with torch.set_grad_enabled(False):
                      for j, data in enumerate(validation_loader, 1):
-                        
-                        images, labels = data
-                        if cuda_available:
-                            images = images.cuda()
-                            labels = labels.cuda()
+                        current_validation_loss, num_samples_processed = validation_loop(model=model,
+                                        current_idx=j,
+                                        current_data=data,
+                                        optimizer=optimizer,
+                                        validation_performance_dict=validation_performance,
+                                        loss_fn=loss_fn,
+                                        cuda_available=cuda_available)
 
-                        optimizer.zero_grad()
-                        output = model(images)
-                        print(f"output.size() {output.size()};\
-                        type(output): {type(output)};\
-                        pred.type: {output.type()} ")
-                        # torch.Size([batch_size_, 4, 400, 640]);
-                        # <class 'torch.Tensor'>;
-                        # torch.cuda.FloatTensor
+                        total_validation_running_loss += current_validation_loss
+                        total_num_validation_samples += num_samples_processed
 
-                        loss = loss_fn(output, labels)
-                        
-                        batch_metrics = evaluate(output, labels)
+            training_epoch_loss = calculate_epoch_loss(total_training_running_loss, total_num_training_samples)
+            validation_epoch_loss = calculate_epoch_loss(total_validation_running_loss, total_num_validation_samples)
 
-                        for key, value in batch_metrics.items():
-                            # print(f"{key}: {value:.4f}")
-                            validation_performance[key] += value * len(images) # weighted by batch size
-
-                        num_samples += len(images)
-                        validation_running_loss += loss.item()
-
-                        # Log every X batches
-                        if j % 50 == 0 or j == 1:
-                            print(f"Validation: Loss at {j} mini-batch {loss.item():.4f}")
-                        # TODO
-                        #                sanity_check(trainloader, model, cuda_available)
-                        #                save_checkpoint(
-                        #                    {
-                        #                        "epoch": run_epoch,
-                        #                        "state_dict": model.state_dict(),
-                        #                        "optimizer": optimizer.state_dict(),
-                        #                    },
-                        #                    "models/o.pth",
-                        #                )
-                        #
-                        # if j == 300:
-                        #     break
-                        # # performance[key].append(average_metric)
-
-            training_epoch_loss = calculate_epoch_loss(training_running_loss, num_samples)
-            validation_epoch_loss = calculate_epoch_loss(validation_running_loss, num_samples)
-            
             training_loss_values.append(training_epoch_loss)
             validation_loss_values.append(validation_epoch_loss)
             print(f"\nTraining epoch loss: {training_epoch_loss:.4f}")
             print(f"Validation epoch loss: {validation_epoch_loss:.4f}\n")
-            
+
             print(f"Training Metrics:")
-            for key in performance_metrics_labels: 
-                training_performance[key] /= num_samples
+            for key in performance_metrics_labels:
+                training_performance[key] /= total_num_training_samples
                 print(f"Average {key} @ epoch: {training_performance[key]:.4f}")
-            
+
             print(f"\nValidation Metrics:")
-            for key in performance_metrics_labels:     
-                validation_performance[key] /= num_samples
+            for key in performance_metrics_labels:
+                validation_performance[key] /= total_num_validation_samples
                 print(f"Average {key} @ epoch: {validation_performance[key]: .4f}")
 
         logger.info(f"#########################")
         logger.info(f"Training and Validation complete.")
 
-        # current_time_stamp= datetime.now().strftime("%d-%b-%Y_%H-%M-%S")
+        PATH = FULL_MODEL_PATH+"/"+ current_time_stamp + "_" + device_name
+        if not os.path.exists(PATH):
+            os.makedirs(PATH, exist_ok=True)
 
         if not debug_print_flag:
-            PATH = FULL_MODEL_PATH+"/"+ current_time_stamp + "_" + device_name
-            print(PATH)
-            if not os.path.exists(PATH):
-                os.makedirs(PATH, exist_ok=True)
+            # PATH = FULL_MODEL_PATH+"/"+ current_time_stamp + "_" + device_name
+            # print(PATH)
+            # if not os.path.exists(PATH):
+            #     os.makedirs(PATH, exist_ok=True)
 
             model_name = PATH+"/weights_" + current_time_stamp + ".pth"
             torch.save(model.state_dict(), model_name)
             logger.info(f"Saved PyTorch Model State to {model_name}")
 
-            json_file = PATH+"/training_performance_"+current_time_stamp+".json"
-            text = json.dumps(training_performance, indent=4)
-            with open(json_file, "w") as out_file_obj:
-                out_file_obj.write(text)
+            performance_file_prefix_to_performance_dict = {
+                "/training_performance_" : training_performance,
+                "/validation_performance_" : validation_performance
+            }
 
-            json_file = PATH+"/validation_performance_"+current_time_stamp+".json"
-            text = json.dumps(validation_performance, indent=4)
-            with open(json_file, "w") as out_file_obj:
-                out_file_obj.write(text)
-           
+            logger.info(f"Writing performance metrics to {PATH}")
+            # Write performance metrics to .json files
+            for file_prefix, performance_dict in performance_file_prefix_to_performance_dict.items():
+                performance_file_writer(folder_path=PATH, file_prefix=file_prefix, performance_dict=performance_dict, current_time_stamp=current_time_stamp)
+
             logger.info(f"#########################")
-            
+
             # To create a plot showing how loss values change for every epoch,
             # use src/ready/apis/plot_losses.py script.
-     
-            loss_file = PATH+"/training_loss_values_"+current_time_stamp+".csv"
-            with open(loss_file, "w") as out_file_obj:
-                for loss in training_loss_values:
-                    out_file_obj.write(f"{loss}\n") 
 
-            loss_file = PATH+"/validation_loss_values_"+current_time_stamp+".csv"
-            with open(loss_file, "w") as out_file_obj:
-                for loss in validation_loss_values:
-                    out_file_obj.write(f"{loss}\n")
+            logger.info(f"Writing loss values to {PATH}")
+
+            loss_values_prefix_to_loss_value = {
+                "/training_loss_values_" : training_loss_values,
+                "/validation_loss_values_" : validation_loss_values
+            }
+
+            for file_prefix, loss_values in loss_values_prefix_to_loss_value.items():
+                loss_values_file_writer(folder_path=PATH, file_prefix=file_prefix, loss_values=loss_values, current_time_stamp=current_time_stamp)
 
         else:
             logger.info(f"Model saving is disabled, set debug_print_flag to False (-df 0) to save model")
@@ -496,25 +446,37 @@ def main(args):
 
         endtime = time.time()
         elapsedtime = endtime - starttime
-        logger.info(f"Elapsed time for the training loop: {elapsedtime} (sec)")
-    
+        logger.info(f"Elapsed time for the training and validation loop: {elapsedtime} (sec)")
+
+        logger.info("Commencing Evaluation")
+
+        test_accuracy = evaluate_model(model=model, test_loader=test_loader, device=device)
+        test_accuracy_file_writer(folder_path=PATH, test_accuracy=test_accuracy,
+                                  current_time_stamp=current_time_stamp, pretrained_model_flag=evaluation_with_pretrained_model_flag)
+
     # Evaluating model using test_set
     else:
-        
-        model_subfolder_for_eval = config.pretrained_model.model_name_for_eval[8:-4]
-        model_path = FULL_MODEL_PATH + '/' + model_subfolder_for_eval + '_' + str(device) + '/' + config.pretrained_model.model_name_for_eval
+
+        logger.info("Skipping Training and Validation Loop. Straight to Evaluation.")
+
+        time_of_testing = datetime.now().strftime("%d-%b-%Y_%H_%M_%S")
+
+        folder_containg_pretrained_model = MODEL_NAME_FOR_EVAL[8:-4] + "_" + device_name
+        model_path = os.path.join(FULL_PRETRAINED_MODEL_PATH, folder_containg_pretrained_model, MODEL_NAME_FOR_EVAL)
+
         model.load_state_dict(torch.load(model_path, weights_only=True))
-        model.eval() 
+        # model.eval()
+        PATH = FULL_MODEL_PATH+"/"+ folder_containg_pretrained_model
+        if not os.path.exists(PATH):
+            os.makedirs(PATH, exist_ok=True)
 
-    logger.info("Commencing evaluation.")
+        test_accuracy = evaluate_model(model=model, test_loader=test_loader,
+                                       device=device)
 
-    test_accuracy = evaluate_model(model, test_loader, device)
+        test_accuracy_file_writer(folder_path=PATH, test_accuracy=test_accuracy, current_time_stamp=time_of_testing, pretrained_model_flag=evaluation_with_pretrained_model_flag)
 
-    accuracy_file = PATH+"/accuracy_value_"+current_time_stamp+".csv"
-    with open(accuracy_file, 'w') as out_file_obj:
-        out_file_obj.write(str(test_accuracy))
- 
     logger.info(f"Model Accuracy: {test_accuracy: .4f}%")
+    logger.info(f"Completed!")
 
 if __name__ == "__main__":
     """
