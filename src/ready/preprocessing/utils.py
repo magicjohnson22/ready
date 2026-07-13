@@ -14,14 +14,27 @@ def find_pairs(image_dir, mask_dir):
     pairs = []
     skipped = []
 
+    # Look for png and tif masks
+    mask_files = (
+        list(mask_dir.rglob("*.png")) +
+        list(mask_dir.rglob("*.tif")) +
+        list(mask_dir.rglob("*.tiff"))
+    )
+
     # Start from the masks and look for matching images
-    for mask_path in sorted(mask_dir.rglob("*.png")):
+    for mask_path in sorted(mask_files):
         rel_path = mask_path.relative_to(mask_dir)
 
         image_path = image_dir / rel_path.with_suffix(".jpg")
 
         if not image_path.exists():
             image_path = image_dir / rel_path.with_suffix(".png")
+
+        if not image_path.exists():
+            image_path = image_dir / rel_path.with_suffix(".tif")
+
+        if not image_path.exists():
+            image_path = image_dir / rel_path.with_suffix(".tiff")
 
         if not image_path.exists():
             skipped.append((mask_path.name, "no matching image found"))
@@ -39,16 +52,6 @@ def find_pairs(image_dir, mask_dir):
             continue
 
         pairs.append((image_path, mask_path))
-
-    # Also check for images that do not have masks
-    image_files = list(image_dir.rglob("*.jpg")) + list(image_dir.rglob("*.png"))
-
-    for image_path in sorted(image_files):
-        rel_path = image_path.relative_to(image_dir)
-        mask_path = mask_dir / rel_path.with_suffix(".png")
-
-        if not mask_path.exists():
-            skipped.append((image_path.name, "no matching mask found"))
 
     return pairs, skipped
 
