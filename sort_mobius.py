@@ -10,11 +10,9 @@ def get_mobious_filenames(data_path_string: str = None):
         list_of_imagefiles.append(name)
     return list_of_imagefiles
 
-
+# compare the list of images and masks, and move any unmatched images to a new folder called "unmatched_images" in the data_root_string directory
 def compare_and_move(images_lists, masks_lists, data_root_string):
-    """
-    Compare the image and mask files and move the ones that do not have a corresponding mask to a new folder.
-    """
+    
 
     # Create a set of mask filenames for faster lookup
     mask_filenames_set = {mask_file.stem for mask_file in masks_lists}

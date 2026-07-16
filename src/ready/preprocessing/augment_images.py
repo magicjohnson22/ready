@@ -104,7 +104,7 @@ def main():
             photometric_saved += 1
 
     total_saved = len(pairs) + geometric_saved + photometric_saved
-
+# 
     print("\nDone.")
     print("Saved to:", args.output_dir)
     print("Original pairs saved:", len(pairs))
@@ -116,6 +116,8 @@ def main():
         print("\nSome files were skipped:")
         for filename, reason in skipped:
             print(f"- {filename}: {reason}")
+            
+            
 
 
 if __name__ == "__main__":

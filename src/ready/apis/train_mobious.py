@@ -231,6 +231,7 @@ def main(args):
     # https://www.geeksforgeeks.org/how-to-normalize-images-in-pytorch/
     transforms_img = transforms.Compose([
                                             transforms.ToImage(),
+                                            transforms.Resize((128,128)),
                                             transforms.RandomHorizontalFlip(p=0.5),
                                             transforms.RandomVerticalFlip(p=0.5),
                                             transforms.RandomRotation(45),
@@ -241,6 +242,7 @@ def main(args):
 
     transforms_rotations = transforms.Compose([
                                             transforms.ToImage(),
+                                            transforms.Resize((128,128)),
                                             transforms.RandomHorizontalFlip(p=0.5),
                                             transforms.RandomVerticalFlip(p=0.5),
                                             transforms.RandomRotation(45),
