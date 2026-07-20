@@ -231,7 +231,7 @@ def main(args):
     # https://www.geeksforgeeks.org/how-to-normalize-images-in-pytorch/
     transforms_img = transforms.Compose([
                                             #transforms.ToImage(),
-                                            #transforms.Resize((128,128)),
+                                            transforms.Resize((640,400)),
                                             #transforms.RandomHorizontalFlip(p=0.5),
                                             #transforms.RandomVerticalFlip(p=0.5),
                                             #transforms.RandomRotation(45),
@@ -242,7 +242,7 @@ def main(args):
 
     transforms_rotations = transforms.Compose([
                                             #transforms.ToImage(),
-                                            transforms.Resize((400,640)),
+                                            transforms.Resize((640,400)),
                                             #transforms.RandomHorizontalFlip(p=0.5),
                                             #transforms.RandomVerticalFlip(p=0.5),
                                             #transforms.RandomRotation(45),
@@ -366,7 +366,7 @@ def main(args):
             # Validation
             logger.info("Validation Section")
             with torch.set_grad_enabled(False):
-                     for j, data in enumerate(validation_loader, 1):
+                     for j, data in enumerate(validation_loader, 10):
                         current_validation_loss, num_samples_processed = validation_loop(model=model,
                                         current_idx=j,
                                         current_data=data,

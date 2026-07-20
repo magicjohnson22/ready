@@ -201,6 +201,7 @@ class MobiousDataset(Dataset):
         random.seed(seed) # apply this seed to target transform
         torch.manual_seed(seed) # needed for torchvision 0.7
         if self.target_transform:
+            encode_mask = encode_mask.unsqueeze(0)
             encode_mask = self.target_transform(encode_mask)
 
         encode_mask=encode_mask.squeeze(0) # from torch.Size([1, 400, 640]) to #torch.Size([400, 640])
